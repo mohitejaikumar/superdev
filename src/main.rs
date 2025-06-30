@@ -157,34 +157,94 @@ struct TokenAccountMeta {
     is_signer: bool,
 }
 
+// Helper function to validate base58 public key
+fn validate_pubkey(pubkey_str: &str) -> Result<Pubkey, String> {
+    if pubkey_str.trim().is_empty() {
+        return Err("Public key cannot be empty".to_string());
+    }
+
+    let decoded = bs58::decode(pubkey_str)
+        .into_vec()
+        .map_err(|_| "Invalid base58 encoding for public key".to_string())?;
+
+    if decoded.len() != 32 {
+        return Err("Public key must be exactly 32 bytes".to_string());
+    }
+
+    Pubkey::from_str(pubkey_str).map_err(|_| "Invalid public key format".to_string())
+}
+
+// Helper function to validate secret key
+fn validate_secret_key(secret_str: &str) -> Result<Keypair, String> {
+    if secret_str.trim().is_empty() {
+        return Err("Secret key cannot be empty".to_string());
+    }
+
+    let decoded = bs58::decode(secret_str)
+        .into_vec()
+        .map_err(|_| "Invalid base58 encoding for secret key".to_string())?;
+
+    if decoded.len() != 64 {
+        return Err("Secret key must be exactly 64 bytes".to_string());
+    }
+
+    Keypair::try_from(decoded.as_slice()).map_err(|_| "Invalid secret key format".to_string())
+}
+
+// Helper function to validate base64 signature
+fn validate_signature(signature_str: &str) -> Result<Signature, String> {
+    if signature_str.trim().is_empty() {
+        return Err("Signature cannot be empty".to_string());
+    }
+
+    let decoded = general_purpose::STANDARD
+        .decode(signature_str.trim())
+        .map_err(|_| "Invalid base64 encoding for signature".to_string())?;
+
+    if decoded.len() != 64 {
+        return Err("Signature must be exactly 64 bytes".to_string());
+    }
+
+    Signature::try_from(decoded).map_err(|_| "Invalid signature format".to_string())
+}
+
+fn create_error_response() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            success: false,
+            error: "Description of error".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+fn create_missing_fields_error() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            success: false,
+            error: "Missing required fields".to_string(),
+        }),
+    )
+        .into_response()
+}
+
 #[handler]
 async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
-    let mint_pubkey = match Pubkey::from_str(&payload.mint) {
+    // Validate decimals (SPL tokens have a maximum of 9 decimals)
+    if payload.decimals > 9 {
+        return create_error_response();
+    }
+
+    let mint_pubkey = match validate_pubkey(&payload.mint) {
         Ok(pubkey) => pubkey,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let mint_authority = match Pubkey::from_str(&payload.mint_authority) {
+    let mint_authority = match validate_pubkey(&payload.mint_authority) {
         Ok(pubkey) => pubkey,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let ix = match initialize_mint(
@@ -195,16 +255,7 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
         payload.decimals,
     ) {
         Ok(ix) => ix,
-        Err(_e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
@@ -232,46 +283,24 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
 
 #[handler]
 async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
-    let mint_pubkey = match Pubkey::from_str(&payload.mint) {
+    // Validate amount
+    if payload.amount == 0 {
+        return create_error_response();
+    }
+
+    let mint_pubkey = match validate_pubkey(&payload.mint) {
         Ok(pubkey) => pubkey,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: "Description of error".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let destination_pubkey = match Pubkey::from_str(&payload.destination) {
+    let destination_pubkey = match validate_pubkey(&payload.destination) {
         Ok(pubkey) => pubkey,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: "Description of error".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let authority_pubkey = match Pubkey::from_str(&payload.authority) {
+    let authority_pubkey = match validate_pubkey(&payload.authority) {
         Ok(pubkey) => pubkey,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: "Description of error".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let ix = match mint_to(
@@ -283,16 +312,7 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
         payload.amount,
     ) {
         Ok(ix) => ix,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: "Description of error".to_string(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
@@ -320,43 +340,14 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
 
 #[handler]
 async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
-    if payload.message.is_empty() || payload.secret.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                success: false,
-                error: "Missing required fields".to_string(),
-            }),
-        )
-            .into_response();
+    // Validate inputs
+    if payload.message.trim().is_empty() || payload.secret.trim().is_empty() {
+        return create_missing_fields_error();
     }
 
-    let secret_bytes = match bs58::decode(&payload.secret).into_vec() {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let keypair = match Keypair::try_from(secret_bytes.as_slice()) {
+    let keypair = match validate_secret_key(&payload.secret) {
         Ok(kp) => kp,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let signature = keypair.sign_message(payload.message.as_bytes());
@@ -376,57 +367,22 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
 
 #[handler]
 async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
-    if payload.message.is_empty() || payload.signature.is_empty() || payload.pubkey.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                success: false,
-                error: "Missing required fields".to_string(),
-            }),
-        )
-            .into_response();
+    // Validate inputs
+    if payload.message.trim().is_empty()
+        || payload.signature.trim().is_empty()
+        || payload.pubkey.trim().is_empty()
+    {
+        return create_missing_fields_error();
     }
 
-    let pubkey = match Pubkey::from_str(&payload.pubkey) {
+    let pubkey = match validate_pubkey(&payload.pubkey) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let signature_bytes = match general_purpose::STANDARD.decode(&payload.signature) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let signature = match Signature::try_from(signature_bytes) {
+    let signature = match validate_signature(&payload.signature) {
         Ok(sig) => sig,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let valid = signature.verify(pubkey.as_ref(), payload.message.as_bytes());
@@ -445,43 +401,29 @@ async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
 
 #[handler]
 async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
-    if payload.from.is_empty() || payload.to.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                success: false,
-                error: "Missing required fields".to_string(),
-            }),
-        )
-            .into_response();
+    // Validate inputs
+    if payload.from.trim().is_empty() || payload.to.trim().is_empty() {
+        return create_missing_fields_error();
     }
-    let from_pubkey = match Pubkey::from_str(&payload.from) {
+
+    if payload.lamports == 0 {
+        return create_error_response();
+    }
+
+    let from_pubkey = match validate_pubkey(&payload.from) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let to_pubkey = match Pubkey::from_str(&payload.to) {
+    let to_pubkey = match validate_pubkey(&payload.to) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
+
+    // Check if from and to are the same (edge case)
+    if from_pubkey == to_pubkey {
+        return create_error_response();
+    }
 
     let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, payload.lamports);
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
@@ -500,60 +442,36 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 
 #[handler]
 async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
-    if payload.destination.is_empty() || payload.mint.is_empty() || payload.owner.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                success: false,
-                error: "Missing required fields".to_string(),
-            }),
-        )
-            .into_response();
+    // Validate inputs
+    if payload.destination.trim().is_empty() || payload.mint.trim().is_empty() || payload.owner.trim().is_empty() {
+        return create_missing_fields_error();
     }
 
-    let destination_pubkey = match Pubkey::from_str(&payload.destination) {
+    if payload.amount == 0 {
+        return create_error_response();
+    }
+
+    let destination_pubkey = match validate_pubkey(&payload.destination) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let mint_pubkey = match Pubkey::from_str(&payload.mint) {
+    let mint_pubkey = match validate_pubkey(&payload.mint) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
-    let owner_pubkey = match Pubkey::from_str(&payload.owner) {
+    let owner_pubkey = match validate_pubkey(&payload.owner) {
         Ok(pk) => pk,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let source_pubkey = get_associated_token_address(&owner_pubkey, &mint_pubkey);
+
+    // Check if source and destination are the same (edge case)
+    if source_pubkey == destination_pubkey {
+        return create_error_response();
+    }
 
     let ix = match transfer(
         &spl_token::id(),
@@ -564,16 +482,7 @@ async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
         payload.amount,
     ) {
         Ok(ix) => ix,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    success: false,
-                    error: String::from("Description of error"),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return create_error_response(),
     };
 
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
