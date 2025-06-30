@@ -1,10 +1,11 @@
 use base64::{Engine as _, engine::general_purpose};
 use bs58;
 use poem::{
-    IntoResponse, Response, Route, Server, handler, http::StatusCode, listener::TcpListener, post,
-    web::Json,
+    EndpointExt, IntoResponse, Response, Result, Route, Server, handler, http::StatusCode,
+    listener::TcpListener, middleware::Tracing, post, web::Json,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signature},
@@ -24,28 +25,6 @@ struct KeyPairData {
 struct GenerateKeyPairOutput {
     pub success: bool,
     pub data: KeyPairData,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateTokenRequest {
-    #[serde(rename = "mintAuthority")]
-    mint_authority: Option<String>,
-    mint: Option<String>,
-    decimals: Option<u8>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MintTokenRequest {
-    mint: Option<String>,
-    destination: Option<String>,
-    authority: Option<String>,
-    amount: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct SignMessageRequest {
-    message: Option<String>,
-    secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,13 +66,6 @@ struct SignMessageResponseData {
     message: String,
 }
 
-#[derive(Deserialize)]
-struct VerifyMessageRequest {
-    message: Option<String>,
-    signature: Option<String>,
-    pubkey: Option<String>,
-}
-
 #[derive(Serialize)]
 struct VerifyMessageResponse {
     success: bool,
@@ -107,13 +79,6 @@ struct VerifyMessageResponseData {
     pubkey: String,
 }
 
-#[derive(Deserialize)]
-struct SendSolRequest {
-    from: Option<String>,
-    to: Option<String>,
-    lamports: Option<u64>,
-}
-
 #[derive(Debug, Serialize)]
 struct SendSolResponse {
     success: bool,
@@ -125,14 +90,6 @@ struct SolInstructionData {
     program_id: String,
     accounts: Vec<String>,
     instruction_data: String,
-}
-
-#[derive(Deserialize)]
-struct SendTokenRequest {
-    destination: Option<String>,
-    mint: Option<String>,
-    owner: Option<String>,
-    amount: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -158,7 +115,6 @@ struct TokenAccountMeta {
 // Constants for validation limits
 const MAX_STRING_LENGTH: usize = 1000;
 const MAX_MESSAGE_LENGTH: usize = 10000;
-
 const MAX_LAMPORTS: u64 = u64::MAX / 2; // Prevent potential overflow
 
 // Helper function to validate string length
@@ -166,11 +122,39 @@ fn validate_string_length(s: &str, max_len: usize) -> bool {
     s.len() <= max_len
 }
 
-// Helper function to check if a string field is present and not empty
-fn is_field_present_and_not_empty(field: &Option<String>) -> bool {
-    match field {
-        Some(s) => !s.trim().is_empty(),
-        None => false,
+// Helper function to safely extract string from JSON value
+fn extract_string_from_json(value: &Value, key: &str) -> Option<String> {
+    match value.get(key) {
+        Some(Value::String(s)) => {
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
+        _ => None,
+    }
+}
+
+// Helper function to safely extract u64 from JSON value
+fn extract_u64_from_json(value: &Value, key: &str) -> Option<u64> {
+    match value.get(key) {
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => None,
+    }
+}
+
+// Helper function to safely extract u8 from JSON value
+fn extract_u8_from_json(value: &Value, key: &str) -> Option<u8> {
+    match value.get(key) {
+        Some(Value::Number(n)) => {
+            if let Some(val) = n.as_u64() {
+                if val <= 255 { Some(val as u8) } else { None }
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -333,22 +317,49 @@ fn create_missing_fields_error() -> Response {
         .into_response()
 }
 
+// Safe JSON parsing wrapper
+fn parse_json_safely(body: String) -> Result<Value, Response> {
+    // Handle empty body
+    if body.trim().is_empty() {
+        return Err(create_missing_fields_error());
+    }
+
+    // Try to parse JSON
+    match serde_json::from_str::<Value>(&body) {
+        Ok(value) => {
+            // Check if it's an object
+            if !value.is_object() {
+                return Err(create_error_response());
+            }
+            Ok(value)
+        }
+        Err(_) => Err(create_error_response()),
+    }
+}
+
 #[handler]
-async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
+async fn create_token_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let mint_authority = extract_string_from_json(&json_value, "mintAuthority");
+    let mint = extract_string_from_json(&json_value, "mint");
+    let decimals = extract_u8_from_json(&json_value, "decimals");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.mint_authority)
-        || !is_field_present_and_not_empty(&payload.mint)
-        || payload.decimals.is_none()
-    {
+    if mint_authority.is_none() || mint.is_none() || decimals.is_none() {
         return create_missing_fields_error();
     }
 
-    let mint_authority_str = payload.mint_authority.unwrap();
-    let mint_str = payload.mint.unwrap();
-    let decimals = payload.decimals.unwrap();
+    let mint_authority_str = mint_authority.unwrap();
+    let mint_str = mint.unwrap();
+    let decimals_val = decimals.unwrap();
 
     // Enhanced validation
-    if validate_decimals(decimals).is_err() {
+    if validate_decimals(decimals_val).is_err() {
         return create_error_response();
     }
 
@@ -367,7 +378,7 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
         &mint_pubkey,
         &mint_authority,
         None,
-        decimals,
+        decimals_val,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
@@ -397,23 +408,30 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
 }
 
 #[handler]
-async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
+async fn mint_token_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let mint = extract_string_from_json(&json_value, "mint");
+    let destination = extract_string_from_json(&json_value, "destination");
+    let authority = extract_string_from_json(&json_value, "authority");
+    let amount = extract_u64_from_json(&json_value, "amount");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.mint)
-        || !is_field_present_and_not_empty(&payload.destination)
-        || !is_field_present_and_not_empty(&payload.authority)
-        || payload.amount.is_none()
-    {
+    if mint.is_none() || destination.is_none() || authority.is_none() || amount.is_none() {
         return create_missing_fields_error();
     }
 
-    let mint_str = payload.mint.unwrap();
-    let destination_str = payload.destination.unwrap();
-    let authority_str = payload.authority.unwrap();
-    let amount = payload.amount.unwrap();
+    let mint_str = mint.unwrap();
+    let destination_str = destination.unwrap();
+    let authority_str = authority.unwrap();
+    let amount_val = amount.unwrap();
 
     // Enhanced validation
-    if validate_amount(amount).is_err() {
+    if validate_amount(amount_val).is_err() {
         return create_error_response();
     }
 
@@ -438,7 +456,7 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
         &destination_pubkey,
         &authority_pubkey,
         &[&authority_pubkey],
-        amount,
+        amount_val,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
@@ -468,16 +486,23 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
 }
 
 #[handler]
-async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
+async fn sign_message_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let message = extract_string_from_json(&json_value, "message");
+    let secret = extract_string_from_json(&json_value, "secret");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.message)
-        || !is_field_present_and_not_empty(&payload.secret)
-    {
+    if message.is_none() || secret.is_none() {
         return create_missing_fields_error();
     }
 
-    let message_str = payload.message.unwrap();
-    let secret_str = payload.secret.unwrap();
+    let message_str = message.unwrap();
+    let secret_str = secret.unwrap();
 
     // Enhanced validation
     if validate_message(&message_str).is_err() {
@@ -505,18 +530,25 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
 }
 
 #[handler]
-async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
+async fn verify_message_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let message = extract_string_from_json(&json_value, "message");
+    let signature = extract_string_from_json(&json_value, "signature");
+    let pubkey = extract_string_from_json(&json_value, "pubkey");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.message)
-        || !is_field_present_and_not_empty(&payload.signature)
-        || !is_field_present_and_not_empty(&payload.pubkey)
-    {
+    if message.is_none() || signature.is_none() || pubkey.is_none() {
         return create_missing_fields_error();
     }
 
-    let message_str = payload.message.unwrap();
-    let signature_str = payload.signature.unwrap();
-    let pubkey_str = payload.pubkey.unwrap();
+    let message_str = message.unwrap();
+    let signature_str = signature.unwrap();
+    let pubkey_str = pubkey.unwrap();
 
     // Enhanced validation
     if validate_message(&message_str).is_err() {
@@ -548,20 +580,27 @@ async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
 }
 
 #[handler]
-async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
+async fn send_sol_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let from = extract_string_from_json(&json_value, "from");
+    let to = extract_string_from_json(&json_value, "to");
+    let lamports = extract_u64_from_json(&json_value, "lamports");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.from)
-        || !is_field_present_and_not_empty(&payload.to)
-        || payload.lamports.is_none()
-    {
+    if from.is_none() || to.is_none() || lamports.is_none() {
         return create_missing_fields_error();
     }
 
-    let from_str = payload.from.unwrap();
-    let to_str = payload.to.unwrap();
-    let lamports = payload.lamports.unwrap();
+    let from_str = from.unwrap();
+    let to_str = to.unwrap();
+    let lamports_val = lamports.unwrap();
 
-    if validate_amount(lamports).is_err() {
+    if validate_amount(lamports_val).is_err() {
         return create_error_response();
     }
 
@@ -580,7 +619,7 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
         return create_error_response();
     }
 
-    let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, lamports);
+    let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, lamports_val);
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
 
     let response = SendSolResponse {
@@ -596,22 +635,29 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 }
 
 #[handler]
-async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
+async fn send_token_safe(body: String) -> Response {
+    let json_value = match parse_json_safely(body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    // Extract fields safely
+    let destination = extract_string_from_json(&json_value, "destination");
+    let mint = extract_string_from_json(&json_value, "mint");
+    let owner = extract_string_from_json(&json_value, "owner");
+    let amount = extract_u64_from_json(&json_value, "amount");
+
     // Check for missing required fields
-    if !is_field_present_and_not_empty(&payload.destination)
-        || !is_field_present_and_not_empty(&payload.mint)
-        || !is_field_present_and_not_empty(&payload.owner)
-        || payload.amount.is_none()
-    {
+    if destination.is_none() || mint.is_none() || owner.is_none() || amount.is_none() {
         return create_missing_fields_error();
     }
 
-    let destination_str = payload.destination.unwrap();
-    let mint_str = payload.mint.unwrap();
-    let owner_str = payload.owner.unwrap();
-    let amount = payload.amount.unwrap();
+    let destination_str = destination.unwrap();
+    let mint_str = mint.unwrap();
+    let owner_str = owner.unwrap();
+    let amount_val = amount.unwrap();
 
-    if validate_amount(amount).is_err() {
+    if validate_amount(amount_val).is_err() {
         return create_error_response();
     }
 
@@ -643,7 +689,7 @@ async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
         &destination_pubkey,
         &owner_pubkey,
         &[&owner_pubkey],
-        amount,
+        amount_val,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
@@ -688,12 +734,13 @@ fn generate_keypair() -> Json<GenerateKeyPairOutput> {
 async fn main() -> Result<(), std::io::Error> {
     let app = Route::new()
         .at("/keypair", post(generate_keypair))
-        .at("/token/create", post(create_token))
-        .at("/token/mint", post(mint_token))
-        .at("/message/sign", post(sign_message))
-        .at("/message/verify", post(verify_message))
-        .at("/send/sol", post(send_sol))
-        .at("/send/token", post(send_token));
+        .at("/token/create", post(create_token_safe))
+        .at("/token/mint", post(mint_token_safe))
+        .at("/message/sign", post(sign_message_safe))
+        .at("/message/verify", post(verify_message_safe))
+        .at("/send/sol", post(send_sol_safe))
+        .at("/send/token", post(send_token_safe))
+        .with(Tracing);
 
     Server::new(TcpListener::bind("0.0.0.0:3000"))
         .run(app)

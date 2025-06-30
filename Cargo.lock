@@ -3803,6 +3803,7 @@ dependencies = [
  "bs58",
  "poem",
  "serde",
+ "serde_json",
  "solana-sdk",
  "spl-associated-token-account",
  "spl-token",
