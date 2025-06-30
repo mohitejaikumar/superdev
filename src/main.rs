@@ -600,7 +600,7 @@ fn generate_keypair() -> Json<GenerateKeyPairOutput> {
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     let app = Route::new()
-        .at("/keypair", get(generate_keypair))
+        .at("/keypair", post(generate_keypair))
         .at("/token/create", post(create_token))
         .at("/token/mint", post(mint_token))
         .at("/message/sign", post(sign_message))
