@@ -485,15 +485,6 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 
     let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, payload.lamports);
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
-    let accounts = ix
-        .accounts
-        .into_iter()
-        .map(|meta| AccountMetaSerializable {
-            pubkey: meta.pubkey.to_string(),
-            is_signer: meta.is_signer,
-            is_writable: meta.is_writable,
-        })
-        .collect();
 
     let response = SendSolResponse {
         success: true,
