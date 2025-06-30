@@ -157,55 +157,152 @@ struct TokenAccountMeta {
     is_signer: bool,
 }
 
-// Helper function to validate base58 public key
+// Constants for validation limits
+const MAX_STRING_LENGTH: usize = 1000;
+const MAX_MESSAGE_LENGTH: usize = 10000;
+const MIN_LAMPORTS: u64 = 1;
+const MAX_LAMPORTS: u64 = u64::MAX / 2; // Prevent potential overflow
+
+// Helper function to validate string length
+fn validate_string_length(s: &str, max_len: usize) -> bool {
+    s.len() <= max_len
+}
+
+// Enhanced validation for base58 public key
 fn validate_pubkey(pubkey_str: &str) -> Result<Pubkey, String> {
-    if pubkey_str.trim().is_empty() {
-        return Err("Public key cannot be empty".to_string());
+    let trimmed = pubkey_str.trim();
+
+    // Check string length to prevent memory exhaustion
+    if !validate_string_length(trimmed, MAX_STRING_LENGTH) {
+        return Err("error".to_string());
     }
 
-    let decoded = bs58::decode(pubkey_str)
+    if trimmed.is_empty() {
+        return Err("error".to_string());
+    }
+
+    // Check for non-base58 characters early
+    if !trimmed
+        .chars()
+        .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c))
+    {
+        return Err("error".to_string());
+    }
+
+    let decoded = bs58::decode(trimmed)
         .into_vec()
-        .map_err(|_| "Invalid base58 encoding for public key".to_string())?;
+        .map_err(|_| "error".to_string())?;
 
     if decoded.len() != 32 {
-        return Err("Public key must be exactly 32 bytes".to_string());
+        return Err("error".to_string());
     }
 
-    Pubkey::from_str(pubkey_str).map_err(|_| "Invalid public key format".to_string())
+    // Additional validation - ensure it's a valid Solana pubkey
+    Pubkey::try_from(decoded.as_slice()).map_err(|_| "error".to_string())
 }
 
-// Helper function to validate secret key
+// Enhanced validation for secret key
 fn validate_secret_key(secret_str: &str) -> Result<Keypair, String> {
-    if secret_str.trim().is_empty() {
-        return Err("Secret key cannot be empty".to_string());
+    let trimmed = secret_str.trim();
+
+    // Check string length
+    if !validate_string_length(trimmed, MAX_STRING_LENGTH) {
+        return Err("error".to_string());
     }
 
-    let decoded = bs58::decode(secret_str)
+    if trimmed.is_empty() {
+        return Err("error".to_string());
+    }
+
+    // Check for non-base58 characters
+    if !trimmed
+        .chars()
+        .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c))
+    {
+        return Err("error".to_string());
+    }
+
+    let decoded = bs58::decode(trimmed)
         .into_vec()
-        .map_err(|_| "Invalid base58 encoding for secret key".to_string())?;
+        .map_err(|_| "error".to_string())?;
 
     if decoded.len() != 64 {
-        return Err("Secret key must be exactly 64 bytes".to_string());
+        return Err("error".to_string());
     }
 
-    Keypair::try_from(decoded.as_slice()).map_err(|_| "Invalid secret key format".to_string())
+    Keypair::try_from(decoded.as_slice()).map_err(|_| "error".to_string())
 }
 
-// Helper function to validate base64 signature
+// Enhanced validation for base64 signature
 fn validate_signature(signature_str: &str) -> Result<Signature, String> {
-    if signature_str.trim().is_empty() {
-        return Err("Signature cannot be empty".to_string());
+    let trimmed = signature_str.trim();
+
+    // Check string length
+    if !validate_string_length(trimmed, MAX_STRING_LENGTH) {
+        return Err("error".to_string());
+    }
+
+    if trimmed.is_empty() {
+        return Err("error".to_string());
+    }
+
+    // Check for valid base64 characters
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+    {
+        return Err("error".to_string());
     }
 
     let decoded = general_purpose::STANDARD
-        .decode(signature_str.trim())
-        .map_err(|_| "Invalid base64 encoding for signature".to_string())?;
+        .decode(trimmed)
+        .map_err(|_| "error".to_string())?;
 
     if decoded.len() != 64 {
-        return Err("Signature must be exactly 64 bytes".to_string());
+        return Err("error".to_string());
     }
 
-    Signature::try_from(decoded).map_err(|_| "Invalid signature format".to_string())
+    Signature::try_from(decoded).map_err(|_| "error".to_string())
+}
+
+// Enhanced message validation
+fn validate_message(message: &str) -> Result<(), String> {
+    // Check length
+    if !validate_string_length(message, MAX_MESSAGE_LENGTH) {
+        return Err("error".to_string());
+    }
+
+    if message.trim().is_empty() {
+        return Err("error".to_string());
+    }
+
+    // Check for null bytes and other problematic characters
+    if message.contains('\0') {
+        return Err("error".to_string());
+    }
+
+    Ok(())
+}
+
+// Enhanced amount validation
+fn validate_amount(amount: u64) -> Result<(), String> {
+    if amount == 0 {
+        return Err("error".to_string());
+    }
+
+    if amount > MAX_LAMPORTS {
+        return Err("error".to_string());
+    }
+
+    Ok(())
+}
+
+// Enhanced decimals validation
+fn validate_decimals(decimals: u8) -> Result<(), String> {
+    if decimals > 9 {
+        return Err("error".to_string());
+    }
+    Ok(())
 }
 
 fn create_error_response() -> Response {
@@ -232,8 +329,8 @@ fn create_missing_fields_error() -> Response {
 
 #[handler]
 async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
-    // Validate decimals (SPL tokens have a maximum of 9 decimals)
-    if payload.decimals > 9 {
+    // Enhanced validation
+    if validate_decimals(payload.decimals).is_err() {
         return create_error_response();
     }
 
@@ -283,8 +380,8 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
 
 #[handler]
 async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
-    // Validate amount
-    if payload.amount == 0 {
+    // Enhanced validation
+    if validate_amount(payload.amount).is_err() {
         return create_error_response();
     }
 
@@ -340,8 +437,8 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
 
 #[handler]
 async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
-    // Validate inputs
-    if payload.message.trim().is_empty() || payload.secret.trim().is_empty() {
+    // Enhanced validation
+    if validate_message(&payload.message).is_err() || payload.secret.trim().is_empty() {
         return create_missing_fields_error();
     }
 
@@ -367,8 +464,8 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
 
 #[handler]
 async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
-    // Validate inputs
-    if payload.message.trim().is_empty()
+    // Enhanced validation
+    if validate_message(&payload.message).is_err()
         || payload.signature.trim().is_empty()
         || payload.pubkey.trim().is_empty()
     {
@@ -406,7 +503,7 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
         return create_missing_fields_error();
     }
 
-    if payload.lamports == 0 {
+    if validate_amount(payload.lamports).is_err() {
         return create_error_response();
     }
 
@@ -443,11 +540,14 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 #[handler]
 async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
     // Validate inputs
-    if payload.destination.trim().is_empty() || payload.mint.trim().is_empty() || payload.owner.trim().is_empty() {
+    if payload.destination.trim().is_empty()
+        || payload.mint.trim().is_empty()
+        || payload.owner.trim().is_empty()
+    {
         return create_missing_fields_error();
     }
 
-    if payload.amount == 0 {
+    if validate_amount(payload.amount).is_err() {
         return create_error_response();
     }
 
