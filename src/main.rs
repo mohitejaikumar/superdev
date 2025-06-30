@@ -62,7 +62,7 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     success: false,
-                    error: "Invalid mint public key".to_string(),
+                    error: String::from("Description of error"),
                 }),
             )
                 .into_response();
@@ -76,19 +76,18 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     success: false,
-                    error: "Invalid mint authority public key".to_string(),
+                    error: String::from("Description of error"),
                 }),
             )
                 .into_response();
         }
     };
 
-    
     let ix = match initialize_mint(
         &spl_token::id(),
         &mint_pubkey,
         &mint_authority,
-        None, 
+        None,
         payload.decimals,
     ) {
         Ok(ix) => ix,
@@ -97,7 +96,7 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     success: false,
-                    error: format!("Failed to create instruction: {}", e),
+                    error: String::from("Description of error"),
                 }),
             )
                 .into_response();
