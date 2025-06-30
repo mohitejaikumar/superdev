@@ -1,12 +1,11 @@
 use base64::{Engine as _, engine::general_purpose};
 use bs58;
 use poem::{
-    IntoResponse, Response, Route, Server, get, handler, http::StatusCode, listener::TcpListener,
-    post, web::Json,
+    IntoResponse, Response, Route, Server, handler, http::StatusCode, listener::TcpListener, post,
+    web::Json,
 };
 use serde::{Deserialize, Serialize};
 use solana_sdk::{
-    instruction::Instruction,
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     signer::Signer,
@@ -14,7 +13,6 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address;
 use spl_token::instruction::{initialize_mint, mint_to, transfer};
-use std::str::FromStr;
 
 #[derive(Serialize, Deserialize)]
 struct KeyPairData {
@@ -31,23 +29,23 @@ struct GenerateKeyPairOutput {
 #[derive(Debug, Deserialize)]
 struct CreateTokenRequest {
     #[serde(rename = "mintAuthority")]
-    mint_authority: String,
-    mint: String,
-    decimals: u8,
+    mint_authority: Option<String>,
+    mint: Option<String>,
+    decimals: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
 struct MintTokenRequest {
-    mint: String,
-    destination: String,
-    authority: String,
-    amount: u64,
+    mint: Option<String>,
+    destination: Option<String>,
+    authority: Option<String>,
+    amount: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct SignMessageRequest {
-    message: String,
-    secret: String,
+    message: Option<String>,
+    secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,9 +89,9 @@ struct SignMessageResponseData {
 
 #[derive(Deserialize)]
 struct VerifyMessageRequest {
-    message: String,
-    signature: String,
-    pubkey: String,
+    message: Option<String>,
+    signature: Option<String>,
+    pubkey: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -111,9 +109,9 @@ struct VerifyMessageResponseData {
 
 #[derive(Deserialize)]
 struct SendSolRequest {
-    from: String,
-    to: String,
-    lamports: u64,
+    from: Option<String>,
+    to: Option<String>,
+    lamports: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,10 +129,10 @@ struct SolInstructionData {
 
 #[derive(Deserialize)]
 struct SendTokenRequest {
-    destination: String,
-    mint: String,
-    owner: String,
-    amount: u64,
+    destination: Option<String>,
+    mint: Option<String>,
+    owner: Option<String>,
+    amount: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -160,12 +158,20 @@ struct TokenAccountMeta {
 // Constants for validation limits
 const MAX_STRING_LENGTH: usize = 1000;
 const MAX_MESSAGE_LENGTH: usize = 10000;
-const MIN_LAMPORTS: u64 = 1;
+
 const MAX_LAMPORTS: u64 = u64::MAX / 2; // Prevent potential overflow
 
 // Helper function to validate string length
 fn validate_string_length(s: &str, max_len: usize) -> bool {
     s.len() <= max_len
+}
+
+// Helper function to check if a string field is present and not empty
+fn is_field_present_and_not_empty(field: &Option<String>) -> bool {
+    match field {
+        Some(s) => !s.trim().is_empty(),
+        None => false,
+    }
 }
 
 // Enhanced validation for base58 public key
@@ -329,17 +335,29 @@ fn create_missing_fields_error() -> Response {
 
 #[handler]
 async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.mint_authority)
+        || !is_field_present_and_not_empty(&payload.mint)
+        || payload.decimals.is_none()
+    {
+        return create_missing_fields_error();
+    }
+
+    let mint_authority_str = payload.mint_authority.unwrap();
+    let mint_str = payload.mint.unwrap();
+    let decimals = payload.decimals.unwrap();
+
     // Enhanced validation
-    if validate_decimals(payload.decimals).is_err() {
+    if validate_decimals(decimals).is_err() {
         return create_error_response();
     }
 
-    let mint_pubkey = match validate_pubkey(&payload.mint) {
+    let mint_pubkey = match validate_pubkey(&mint_str) {
         Ok(pubkey) => pubkey,
         Err(_) => return create_error_response(),
     };
 
-    let mint_authority = match validate_pubkey(&payload.mint_authority) {
+    let mint_authority = match validate_pubkey(&mint_authority_str) {
         Ok(pubkey) => pubkey,
         Err(_) => return create_error_response(),
     };
@@ -349,7 +367,7 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
         &mint_pubkey,
         &mint_authority,
         None,
-        payload.decimals,
+        decimals,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
@@ -380,22 +398,36 @@ async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Response {
 
 #[handler]
 async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.mint)
+        || !is_field_present_and_not_empty(&payload.destination)
+        || !is_field_present_and_not_empty(&payload.authority)
+        || payload.amount.is_none()
+    {
+        return create_missing_fields_error();
+    }
+
+    let mint_str = payload.mint.unwrap();
+    let destination_str = payload.destination.unwrap();
+    let authority_str = payload.authority.unwrap();
+    let amount = payload.amount.unwrap();
+
     // Enhanced validation
-    if validate_amount(payload.amount).is_err() {
+    if validate_amount(amount).is_err() {
         return create_error_response();
     }
 
-    let mint_pubkey = match validate_pubkey(&payload.mint) {
+    let mint_pubkey = match validate_pubkey(&mint_str) {
         Ok(pubkey) => pubkey,
         Err(_) => return create_error_response(),
     };
 
-    let destination_pubkey = match validate_pubkey(&payload.destination) {
+    let destination_pubkey = match validate_pubkey(&destination_str) {
         Ok(pubkey) => pubkey,
         Err(_) => return create_error_response(),
     };
 
-    let authority_pubkey = match validate_pubkey(&payload.authority) {
+    let authority_pubkey = match validate_pubkey(&authority_str) {
         Ok(pubkey) => pubkey,
         Err(_) => return create_error_response(),
     };
@@ -406,7 +438,7 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
         &destination_pubkey,
         &authority_pubkey,
         &[&authority_pubkey],
-        payload.amount,
+        amount,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
@@ -437,17 +469,27 @@ async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Response {
 
 #[handler]
 async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
-    // Enhanced validation
-    if validate_message(&payload.message).is_err() || payload.secret.trim().is_empty() {
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.message)
+        || !is_field_present_and_not_empty(&payload.secret)
+    {
         return create_missing_fields_error();
     }
 
-    let keypair = match validate_secret_key(&payload.secret) {
+    let message_str = payload.message.unwrap();
+    let secret_str = payload.secret.unwrap();
+
+    // Enhanced validation
+    if validate_message(&message_str).is_err() {
+        return create_missing_fields_error();
+    }
+
+    let keypair = match validate_secret_key(&secret_str) {
         Ok(kp) => kp,
         Err(_) => return create_error_response(),
     };
 
-    let signature = keypair.sign_message(payload.message.as_bytes());
+    let signature = keypair.sign_message(message_str.as_bytes());
     let signature_b64 = general_purpose::STANDARD.encode(signature.as_ref());
 
     let response = SignMessageResponse {
@@ -455,7 +497,7 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
         data: SignMessageResponseData {
             signature: signature_b64,
             public_key: bs58::encode(keypair.pubkey().to_bytes()).into_string(),
-            message: payload.message,
+            message: message_str,
         },
     };
 
@@ -464,31 +506,40 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
 
 #[handler]
 async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
-    // Enhanced validation
-    if validate_message(&payload.message).is_err()
-        || payload.signature.trim().is_empty()
-        || payload.pubkey.trim().is_empty()
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.message)
+        || !is_field_present_and_not_empty(&payload.signature)
+        || !is_field_present_and_not_empty(&payload.pubkey)
     {
         return create_missing_fields_error();
     }
 
-    let pubkey = match validate_pubkey(&payload.pubkey) {
+    let message_str = payload.message.unwrap();
+    let signature_str = payload.signature.unwrap();
+    let pubkey_str = payload.pubkey.unwrap();
+
+    // Enhanced validation
+    if validate_message(&message_str).is_err() {
+        return create_missing_fields_error();
+    }
+
+    let pubkey = match validate_pubkey(&pubkey_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
 
-    let signature = match validate_signature(&payload.signature) {
+    let signature = match validate_signature(&signature_str) {
         Ok(sig) => sig,
         Err(_) => return create_error_response(),
     };
 
-    let valid = signature.verify(pubkey.as_ref(), payload.message.as_bytes());
+    let valid = signature.verify(pubkey.as_ref(), message_str.as_bytes());
 
     let response = VerifyMessageResponse {
         success: true,
         data: VerifyMessageResponseData {
             valid,
-            message: payload.message,
+            message: message_str,
             pubkey: bs58::encode(pubkey.to_bytes()).into_string(),
         },
     };
@@ -498,21 +549,28 @@ async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
 
 #[handler]
 async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
-    // Validate inputs
-    if payload.from.trim().is_empty() || payload.to.trim().is_empty() {
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.from)
+        || !is_field_present_and_not_empty(&payload.to)
+        || payload.lamports.is_none()
+    {
         return create_missing_fields_error();
     }
 
-    if validate_amount(payload.lamports).is_err() {
+    let from_str = payload.from.unwrap();
+    let to_str = payload.to.unwrap();
+    let lamports = payload.lamports.unwrap();
+
+    if validate_amount(lamports).is_err() {
         return create_error_response();
     }
 
-    let from_pubkey = match validate_pubkey(&payload.from) {
+    let from_pubkey = match validate_pubkey(&from_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
 
-    let to_pubkey = match validate_pubkey(&payload.to) {
+    let to_pubkey = match validate_pubkey(&to_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
@@ -522,7 +580,7 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
         return create_error_response();
     }
 
-    let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, payload.lamports);
+    let ix = system_instruction::transfer(&from_pubkey, &to_pubkey, lamports);
     let instruction_data = general_purpose::STANDARD.encode(&ix.data);
 
     let response = SendSolResponse {
@@ -539,29 +597,35 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 
 #[handler]
 async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
-    // Validate inputs
-    if payload.destination.trim().is_empty()
-        || payload.mint.trim().is_empty()
-        || payload.owner.trim().is_empty()
+    // Check for missing required fields
+    if !is_field_present_and_not_empty(&payload.destination)
+        || !is_field_present_and_not_empty(&payload.mint)
+        || !is_field_present_and_not_empty(&payload.owner)
+        || payload.amount.is_none()
     {
         return create_missing_fields_error();
     }
 
-    if validate_amount(payload.amount).is_err() {
+    let destination_str = payload.destination.unwrap();
+    let mint_str = payload.mint.unwrap();
+    let owner_str = payload.owner.unwrap();
+    let amount = payload.amount.unwrap();
+
+    if validate_amount(amount).is_err() {
         return create_error_response();
     }
 
-    let destination_pubkey = match validate_pubkey(&payload.destination) {
+    let destination_pubkey = match validate_pubkey(&destination_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
 
-    let mint_pubkey = match validate_pubkey(&payload.mint) {
+    let mint_pubkey = match validate_pubkey(&mint_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
 
-    let owner_pubkey = match validate_pubkey(&payload.owner) {
+    let owner_pubkey = match validate_pubkey(&owner_str) {
         Ok(pk) => pk,
         Err(_) => return create_error_response(),
     };
@@ -579,7 +643,7 @@ async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
         &destination_pubkey,
         &owner_pubkey,
         &[&owner_pubkey],
-        payload.amount,
+        amount,
     ) {
         Ok(ix) => ix,
         Err(_) => return create_error_response(),
