@@ -116,10 +116,17 @@ struct SendSolRequest {
     lamports: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct SendSolResponse {
     success: bool,
-    data: TokenInstructionData,
+    data: SolInstructionData,
+}
+
+#[derive(Debug, Serialize)]
+struct SolInstructionData {
+    program_id: String,
+    accounts: Vec<String>,
+    instruction_data: String,
 }
 
 #[derive(Deserialize)]
@@ -133,7 +140,21 @@ struct SendTokenRequest {
 #[derive(Serialize)]
 struct SendTokenResponse {
     success: bool,
-    data: TokenInstructionData,
+    data: TokenTransferInstructionData,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenTransferInstructionData {
+    program_id: String,
+    accounts: Vec<TokenAccountMeta>,
+    instruction_data: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenAccountMeta {
+    pubkey: String,
+    #[serde(rename = "isSigner")]
+    is_signer: bool,
 }
 
 #[handler]
@@ -476,9 +497,9 @@ async fn send_sol(Json(payload): Json<SendSolRequest>) -> Response {
 
     let response = SendSolResponse {
         success: true,
-        data: TokenInstructionData {
+        data: SolInstructionData {
             program_id: ix.program_id.to_string(),
-            accounts,
+            accounts: vec![from_pubkey.to_string(), to_pubkey.to_string()],
             instruction_data,
         },
     };
@@ -568,16 +589,15 @@ async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
     let accounts = ix
         .accounts
         .into_iter()
-        .map(|meta| AccountMetaSerializable {
+        .map(|meta| TokenAccountMeta {
             pubkey: meta.pubkey.to_string(),
             is_signer: meta.is_signer,
-            is_writable: meta.is_writable,
         })
         .collect();
 
     let response = SendTokenResponse {
         success: true,
-        data: TokenInstructionData {
+        data: TokenTransferInstructionData {
             program_id: ix.program_id.to_string(),
             accounts,
             instruction_data,
