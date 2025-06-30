@@ -9,5 +9,6 @@ bs58 = "0.5.1"
 poem = "3.1.11"
 serde = { version= "1.0.219", features=["derive"]}
 solana-sdk = "2.3.1"
+spl-associated-token-account = "7.0.0"
 spl-token = "8.0.0"
 tokio = {version = "1.45.1", features=["full"]}

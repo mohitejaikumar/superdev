@@ -12,6 +12,7 @@ use solana_sdk::{
     signer::Signer,
     system_instruction,
 };
+use spl_associated_token_account::get_associated_token_address;
 use spl_token::instruction::{initialize_mint, mint_to, transfer};
 use std::str::FromStr;
 
@@ -344,7 +345,7 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Response {
         success: true,
         data: SignMessageResponseData {
             signature: signature_b64,
-            public_key: keypair.pubkey().to_string(),
+            public_key: bs58::encode(keypair.pubkey().to_bytes()).into_string(),
             message: payload.message,
         },
     };
@@ -414,7 +415,7 @@ async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Response {
         data: VerifyMessageResponseData {
             valid,
             message: payload.message,
-            pubkey: payload.pubkey,
+            pubkey: bs58::encode(pubkey.to_bytes()).into_string(),
         },
     };
 
@@ -540,9 +541,11 @@ async fn send_token(Json(payload): Json<SendTokenRequest>) -> Response {
         }
     };
 
+    let source_pubkey = get_associated_token_address(&owner_pubkey, &mint_pubkey);
+
     let ix = match transfer(
         &spl_token::id(),
-        &mint_pubkey,
+        &source_pubkey,
         &destination_pubkey,
         &owner_pubkey,
         &[&owner_pubkey],
